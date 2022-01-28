@@ -2,120 +2,166 @@ require 'curb'
 require 'nokogiri'
 require 'csv'
 
-# получение страниц
-def formation_links_pages(url_input)
-  array_page_urls = []
-  # хардкожу пагинацию
-  (1..10).each do |i|
-    # через тернарный оператор
-    # при 1 передаём ссылку без номера страницы, далее собираем ссылку с номером страницы
-    i == 1 ? array_page_urls << url_input : array_page_urls << "#{url_input}?p=#{i}"
-  end
-
-  array_page_urls
-end
-
-# получение ссылок
-def get_product_links(array_page_links)
-  array_product_links = []
-
-  array_page_links.each do |url|
-    doc = get_document(url)
-
-    # находим ссылку для каждого продукта
-    doc.xpath("//").each do |product_link|
-      print "."
-
-      array_product_links << product_link
-    end
-  end
-
-  array_product_links
-end
-
 # получение документа
-def get_document(url)
-  c = Curl::Easy.new(url)
-  c.ssl_verify_peer = false
-  c.perform
-  html = c.body_str
-  Nokogiri::HTML(html)
+module Document
+  def get_document(url)
+    c = Curl::Easy.new url
+    c.ssl_verify_peer = false
+    c.perform
+    html = c.body_str
+    Nokogiri::HTML(html)
+  end
 end
 
-# имитация загрузки
-def show_load
-  print '.'
+#  имитация загрузки
+module SimulationDownload
+  def show_load
+    print '.'
+  end
 end
 
-# сбор данных
-def product_data(doc)
-  array_product_string = []
-  # получение имени продукта
-  doc.xpath("//").each {|data_name| array_product_string << data_name.text.gsub(/\b./, &:upcase).strip + ' – '}
-  # получение цены
-  doc.xpath("//").each {|data_price| array_product_string << '%.2f' % data_price.text.to_f + ', '}
-  # получение ссылки изображения
-  doc.xpath("//").each {|data_img_link| array_product_string << data_img_link.value + "\n"}
+# отвечает за создание ссылок на страницы и ссылок о каждом товаре
+class Link
+  include Document
+  include SimulationDownload
 
-  show_load
-  # превращаем массив в строку
-  array_product_string.join('')
-end
-
-# сбор данных мультипродукта
-def multiproduct_data(doc, tags_quantity)
-  array_product_string = []
-  for i in 1..tags_quantity
-    # получение имени продукта
-    doc.xpath("//").each {|data_name| array_product_string << data_name.text.gsub(/\b./, &:upcase).strip + ' – '}
-    # получение цены для вариации продукта
-    doc.xpath("//").each {|data_price| array_product_string << '%.2f' % data_price.text.to_f + ', '}
-    # получение ссылки изображения
-    doc.xpath("//").each {|data_img_link| array_product_string << data_img_link.value + "\n"}
+  def initialize
+    @url_input = ARGV.first
+    check_input
+    formation_links_pages
+    say_get_links
+    get_product_links
   end
 
-  show_load
-  # превращаем массив в строку
-  array_product_string.join('')
-end
-
-# определение типа продукта
-def get_type_products(array_product_links)
-  data_string = "Name, Price, Image\n"
-  array_product_links.each do |url|
-    doc = get_document(url)
-
-    # находим количество тегов у продукта
-    tags_quantity = doc.xpath("//").count
-    # если количество тегов '' у продукта больше одного, то это мультипродукт, если нет – обычный
-    data_string = if tags_quantity > 1
-      # добавляем полученные мультиданные к начальной строке
-      multiproduct_data(doc, tags_quantity)
-    else
-      # добавляем полученные данные к начальной строке
-      product_data(doc)
+  def check_input
+    # проверка количества переданных аргументов
+    if ARGV.length != 2
+      puts 'Нам нужно ровно два аргумента'
+      exit
     end
   end
 
-  data_string
+  def say_get_links
+    puts 'Сбор ссылок товаров'
+  end
+
+  # получение ссылок товаров
+  def get_product_links
+    array_product_links = formation_links_pages.map do |url|
+      doc = get_document url
+
+      # найти ссылку для каждого товара
+      doc.xpath("//").map do |product_link|
+        show_load
+        product_link.value
+      end
+    end
+
+    # преобразовать многомерный массив в одномерный
+    array_product_links.flatten
+  end
+
+  private
+
+  # получение страниц
+  def formation_links_pages
+    doc = get_document @url_input
+
+    # получить количество страниц
+    count_pages = doc.xpath("//").text.to_i
+    # через тернарным оператор
+    # если 1, передаем ссылку без номера страницы, затем собираем ссылку с номером страницы
+    (1..count_pages).map { |i| i == 1 ? @url_input : "#{@url_input}....#{i}" }
+  end
 end
 
-# запись данных в файл
-def writing_file(file_name, data_string)
-  File.write(file_name, data_string)
-  CSV.table(file_name)
+# отвечает за определения типов и за получение данных о товаре
+class Product < Link
+  def initialize
+    @array_product_links = Link.new.get_product_links
+    say_get_products
+  end
+
+  def say_get_products
+    puts "\nСбор данных товаров"
+  end
+
+  # определение типа продукта
+  def get_type_products
+    data_string = @array_product_links.map do |url|
+      doc = get_document url
+
+      # найти количество тегов для товара
+      tags_quantity = doc.xpath("//").count
+      # если количество тегов '' в товаре больше одного, то это мультитовара, если нет, то обычный
+      (tags_quantity > 1 ? multiproduct_data(doc, tags_quantity) : product_data(doc))
+    end
+
+    data_string.flatten(1)
+  end
+
+  private
+
+  # сбор данных обычного товара
+  def product_data(doc)
+    array_product_string = ''
+    # получить название товара
+    array_product_string << "#{doc.xpath("//")}; "
+    # получить цену
+    array_product_string << if doc.xpath("//").count.zero?
+                              "#{'%.2f' % doc.xpath("//").text.to_f}; "
+                            else
+                              "#{'%.2f' % doc.xpath("//").text.to_f}; "
+                            end
+    # получить изображение
+    array_product_string << "#{doc.xpath("//").text}\n"
+
+    show_load
+    # массив в строку
+    array_product_string.split("\n").map { |x| [] << x}
+  end
+
+  # сбор данных мультитовара
+  def multiproduct_data(doc, tags_quantity)
+    array_product_string = ''
+
+    (1..tags_quantity).each do |i|
+      # получение имени
+      array_product_string << "#{doc.xpath("//").text}; "
+      # получение цены
+      array_product_string << if doc.xpath("//").count > 1
+                                "#{'%.2f' % doc.xpath("//#{i}").text.to_f}; "
+                              else
+                                "#{'%.2f' % doc.xpath("//#{i}").text.to_f}; "
+                              end
+      # получение изображения
+      array_product_string << "#{doc.xpath("//").text}\n"
+    end
+
+    show_load
+    # массив в строку
+    array_product_string.split("\n").map { |x| [] << x }
+  end
 end
 
-puts 'Передайте ссылку'
-url_input = STDIN.gets.chomp
+# отвечает за сохранение данных в документе
+class List
+  def initialize
+    array_arrays_products = Product.new.get_type_products
+    writing_file array_arrays_products
+  end
 
-puts 'Введите имя файла:'
-file_name_input = STDIN.gets.chomp + '.csv'
+  # записать данные в файл
+  def writing_file(arrays_products)
+    headers = ['Name; Price; Image']
 
-puts 'Сбор ссылок товаров'
-array_page_links = formation_links_pages(url_input)
-array_product_links = get_product_links(array_page_links)
-puts "\nСбор данных товаров"
-data_string = get_type_products(array_product_links)
-writing_file(file_name_input, data_string)
+    CSV.open("#{ARGV.last}.csv", 'ab', write_headers: true, headers: headers) do |csv|
+      arrays_products.each do |array_product|
+        csv << array_product
+      end
+    end
+  end
+end
+
+List.new
 puts "\nИнформация успешно сохранена!"
